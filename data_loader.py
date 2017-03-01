@@ -241,3 +241,97 @@ class TSPDataLoader(object):
 
     tf.logging.info("Update [{}] data with {} used in the paper".format(name, path))
     self.data[name] = TSP(x=x, y=y, name=name)
+
+
+class CVRPDataLoader(TSPDataLoader):
+  def __init__(self, config, rng=None):
+    super(CVRPDataLoader, self).__init__(config, rng)
+
+    paths = self.download_google_drive_file()
+    if len(paths) != 0:
+      self._maybe_generate_and_save(except_list=paths.keys())
+      for name, path in paths.items():
+        self.read_zip_and_update_data(path, name)
+    else:
+      self._maybe_generate_and_save()
+    self._create_input_queue()
+
+  def _maybe_generate_and_save(self, except_list=[]):
+    self.data = {}
+
+    for name, num in self.data_num.items():
+      if name in except_list:
+        tf.logging.info("Skip creating {} because of given except_list {}".format(name, except_list))
+        continue
+      path = self.get_path(name)
+
+      if not os.path.exists(path):
+        tf.logging.info("Creating {} for [{}]".format(path, self.task))
+
+        x = np.zeros([num, self.max_length, 2], dtype=np.float32)
+        y = np.zeros([num, self.max_length], dtype=np.int32)
+
+        for idx in trange(num, desc="Create {} data".format(name)):
+          n_nodes = self.rng.randint(self.min_length, self.max_length+ 1)
+          nodes, res = generate_one_example(n_nodes, self.rng)
+          x[idx,:len(nodes)] = nodes
+          y[idx,:len(res)] = res
+
+        np.savez(path, x=x, y=y)
+        self.data[name] = TSP(x=x, y=y, name=name)
+      else:
+        tf.logging.info("Skip creating {} for [{}]".format(path, self.task))
+        tmp = np.load(path)
+        self.data[name] = TSP(x=tmp['x'], y=tmp['y'], name=name)
+
+  def get_path(self, name):
+    return os.path.join(
+        self.data_dir, "{}_{}={}.npz".format(
+            self.task_name, name, self.data_num[name]))
+
+  def download_google_drive_file(self):
+    paths = {}
+    for mode in ['train', 'test']:
+      candidates = []
+      candidates.append(
+          '{}{}_{}'.format(self.task, self.max_length, mode))
+      candidates.append(
+          '{}{}-{}_{}'.format(self.task, self.min_length, self.max_length, mode))
+
+      for key in candidates:
+        for search_key in GOOGLE_DRIVE_IDS.keys():
+          if search_key.startswith(key):
+            path = os.path.join(self.data_dir, search_key)
+            tf.logging.info("Download dataset of the paper to {}".format(path))
+
+            if not os.path.exists(path):
+              download_file_from_google_drive(GOOGLE_DRIVE_IDS[search_key], path)
+              if path.endswith('zip'):
+                with zipfile.ZipFile(path, 'r') as z:
+                  z.extractall(self.data_dir)
+            paths[mode] = path
+
+    tf.logging.info("Can't found dataset from the paper!")
+    return paths
+
+  def read_zip_and_update_data(self, path, name):
+    if path.endswith('zip'):
+      filenames = zipfile.ZipFile(path).namelist()
+      paths = [os.path.join(self.data_dir, filename) for filename in filenames]
+    else:
+      paths = [path]
+
+    x_list, y_list = read_paper_dataset(paths, self.max_length)
+
+    x = np.zeros([len(x_list), self.max_length, 2], dtype=np.float32)
+    y = np.zeros([len(y_list), self.max_length], dtype=np.int32)
+
+    for idx, (nodes, res) in enumerate(tqdm(zip(x_list, y_list))):
+      x[idx,:len(nodes)] = nodes
+      y[idx,:len(res)] = res
+
+    if self.data is None:
+      self.data = {}
+
+    tf.logging.info("Update [{}] data with {} used in the paper".format(name, path))
+    self.data[name] = TSP(x=x, y=y, name=name)
